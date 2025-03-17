@@ -1,7 +1,7 @@
 # Termux Setup
 
 ### Script untuk menginstal beberapa paket secara otomatis dan menyesuaikan di Termux Anda.
-![image](https://github.com/anonymousx97/termux-setup/assets/88324835/424eafa8-d0bb-4b6b-a033-b45b5d878dcc)
+![image](https://github.com/mjoeyx/termux-setup/assets/88324835/424eafa8-d0bb-4b6b-a033-b45b5d878dcc)
 
 
 >dibuat karena Mjoeyx ~~CAPE/Gabut~~ Setup Termux lagi dan lagi..
