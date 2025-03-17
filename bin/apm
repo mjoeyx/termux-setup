@@ -1,1 +1,267 @@
+#!/usr/bin/env python
 
+import os
+import subprocess
+import sys
+import termios
+import tty
+
+ARG_MAP = {
+    "-d": "disable",
+    "-e": "enable",
+    "-u": "uninstall",
+}
+
+RAW_PACKAGES_LIST: list[str] = []
+PACKAGE_LIST: list[str] = []
+
+
+class Colors:
+    CYAN = "\033[96m"
+    RED = "\033[91m"
+    ENDC = "\033[0m"
+
+
+# Periksa args yang valid. Keluar jika salah.
+try:
+    assert ARG_MAP.get(sys.argv[1])
+    ACTION = ARG_MAP[sys.argv[1]]
+
+except (AssertionError, IndexError):
+    print(
+        f"""{Colors.RED}Invalid Command!{Colors.ENDC}
+
+Usage:
+  -e     : Enable the app
+  -d     : Disable the app
+  -u     : Uninstall the app
+"""
+    )
+    sys.exit(1)
+
+
+class Keys:
+    KEY = "\x1b"
+    UP = "\x1b[A"
+    DOWN = "\x1b[B"
+    BACKSPACE = "\x7f"
+    CTRL_C = "\x03"
+    CTRL_Z = "\x1a"
+
+    ALLOWED_KEYS = (KEY, UP, DOWN, BACKSPACE, CTRL_C, CTRL_Z)
+
+
+class Manager:
+
+    def __init__(self):
+        os.system("printf '\e[?25l'")
+
+        self.search_term: str = ""
+        self.selected_package: str = ""
+        self.selected_index: int = 0
+
+        # Simpan pengaturan terminal lama untuk dikembalikan saat keluar.
+        self.stdin_file_descriptor = sys.stdin.fileno()
+        self.old_terminal_settings = termios.tcgetattr(self.stdin_file_descriptor)
+
+        # Atur terminal ke mode input
+        tty.setcbreak(self.stdin_file_descriptor)
+
+        # Pengaturan Area Tampilan
+        self.reset_output_area(count=5, indent=True)
+
+    def clear_package_data(self) -> None:
+        self.search_term: str = ""
+        self.selected_package: str = ""
+        self.selected_index: int = 0
+
+    def handle_user_input(self) -> None:
+        """Start Waiting for Input"""
+
+        while 1:
+
+            previous_menu_length: int = self.show_package_options()
+            self.reset_output_area(previous_menu_length)
+
+            user_input = sys.stdin.read(1)
+
+            match user_input:
+                # Tindakan pencegahan ekstra untuk mode baca langsung
+                case (Keys.CTRL_C, Keys.CTRL_Z):
+                    self.cleanup_and_exit(0)
+
+                # Tidak ada spasi
+                case " ":
+                    continue
+
+                # Jika tombol naik/turun ditekan, nilainya akan terbaca
+                case Keys.KEY:
+                    user_input += sys.stdin.read(2)
+
+                    match user_input:
+                        case Keys.UP:
+                            # Kurangi indeks ke satu untuk bergerak naik di menu
+                            self.selected_index -= 1
+
+                        case Keys.DOWN:
+                            # Tingkatkan indeks ke satu untuk bergerak ke bawah di menu
+                            self.selected_index += 1
+
+                # Hapus satu huruf
+                case Keys.BACKSPACE:
+                    self.search_term = self.search_term[:-1]
+
+                    # Jika istilah pencarian kosong, hapus data yang disimpan
+                    if not self.search_term:
+                        self.clear_package_data()
+
+                # Lakukan tugas arg di Enter
+                case "\n":
+                    if self.selected_package:
+                        sys.stdout.flush()
+                        self.apply_package_action()
+                        self.clear_package_data()
+                        self.reset_output_area(count=5, indent=True)
+
+                case _:
+                    if user_input.isalnum():
+                        self.search_term += user_input
+
+    def show_input_bar(self) -> None:
+        """Show Query"""
+        # Hapus baris input dan pergi ke awal
+        sys.stdout.write("\033[K\r")
+
+        # Print Input
+        sys.stdout.write("app name: " + self.search_term)
+
+    def show_package_options(self) -> int:
+        """Show top 5 packages"""
+        sys.stdout.flush()
+
+        self.show_input_bar()
+
+        menu, menu_len = self.format_package_menu()
+
+        # Print Menu
+        sys.stdout.write(menu)
+
+        sys.stdout.flush()
+
+        return menu_len
+
+    @staticmethod
+    def highlight_selected_package(package_name: str) -> str:
+        """
+        Highlights the selected package with color.
+        """
+        return f"{Colors.RED}>{Colors.ENDC} {Colors.CYAN}{package_name}{Colors.ENDC}"
+
+    def format_package_menu(self) -> tuple[str, int]:
+        """
+        Builds the menu string based on the input and package list.
+        """
+        if not self.search_term:
+            self.clear_package_data()
+            return "", 0
+
+        packages = [pkg for pkg in PACKAGE_LIST if self.search_term in pkg][0:5]
+
+        if not packages:
+            self.selected_package = ""
+            return "", 0
+
+        # Check current index
+        try:
+            packages[self.selected_index]
+        except IndexError:
+            self.selected_index = 0
+
+        self.selected_package = packages[self.selected_index]
+
+        packages[self.selected_index] = self.highlight_selected_package(
+            self.selected_package
+        )
+
+        return "\n" + "\n".join(packages), len(packages)
+
+    @staticmethod
+    def reset_output_area(count: int, indent=False) -> None:
+        """Clear or Adjust Display"""
+
+        # Flush karakter apa pun di layar
+        sys.stdout.flush()
+
+        if indent:
+            # Sesuaikan layar jika tidak ada ruang yang tersisa
+            sys.stdout.write("\n" * (count + 1))
+
+        # Pindah garis ke akhir
+        sys.stdout.write("\033[E")
+
+        # Pindahkan satu baris ke atas setiap langkah untuk setiap entri dalam menu dan hapus
+        for _ in range(count + 1):
+            sys.stdout.write("\033[F\033[K")
+
+    def apply_package_action(self) -> None:
+        """Enable / Disable / Uninstall app"""
+        subprocess.call(
+            f"su -c 'pm {ACTION} --user 0 {self.selected_package}'", shell=True
+        )
+
+    def cleanup_and_exit(self, exit_code: int) -> None:
+        """Restore everything and exit"""
+
+        # Reset terminal dan matikan mode baca langsung.
+        termios.tcsetattr(
+            self.stdin_file_descriptor, termios.TCSADRAIN, self.old_terminal_settings
+        )
+
+        # Bersihkan karakter yang tersisa di layar
+        sys.stdout.write("\r\033[K")
+
+        # Kursor yang dapat diaktifkan kembali
+        os.system("printf '\e[?25h'")
+
+        sys.exit(exit_code)
+
+
+def check_su() -> None:
+    # SU binary untuk digunakan.
+    su_paths = [
+        "/sbin/su",
+        "/system/sbin/su",
+        "/system/bin/su",
+        "/system/xbin/su",
+        "/su/bin/su",
+        "/magisk/.core/bin/su",
+    ]
+    for path in su_paths:
+        if os.path.isfile(path):
+            return
+    else:
+        print("SU Binary not found\nAre you Rooted?")
+        sys.exit(1)
+
+
+if __name__ == "__main__":
+    check_su()
+    # Dapatkan daftar paket yang diinstal menggunakan root
+    RAW_PACKAGES_LIST = (
+        subprocess.check_output("su -c pm list packages", shell=True)
+        .decode("utf-8")
+        .split()
+    )
+
+    # Strip nama paket
+    PACKAGE_LIST = [pkg.removeprefix("package:") for pkg in RAW_PACKAGES_LIST]
+
+    exit_code = 0
+    manager = Manager()
+    try:
+        manager.handle_user_input()
+    except Exception as e:
+        exit_code = 1
+        print(e)
+    finally:
+        manager.cleanup_and_exit(exit_code=exit_code)
